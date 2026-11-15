@@ -366,6 +366,12 @@ const _backpedal = /(?:[^?!.,:;*_'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*
 
 const del = /^(~~?)(?=[^\s~])((?:\\[\s\S]|[^\\])*?(?:\\[\s\S]|[^\s~\\]))\1(?=[^~]|$)/;
 
+const inlineTextGfm = edit(/^(?:[^a-zA-Z0-9](?=emailProtocol)|(`+|~+|[^`~])(?:(?=[`~])|(?= {2,}\n)|(?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)|[\s\S]*?(?:(?=[\\<!\[`*~_]|\b_|protocol:\/\/|wwwStart|$)|[^ ](?= {2,}\n)|[^a-zA-Z0-9](?=emailProtocol)|[^a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-](?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@))))/)
+  .replace('protocol', _caseInsensitiveProtocol)
+  .replace(/emailProtocol/g, /(?:mailto|xmpp):/)
+  .replace('wwwStart', '(?<![^\\s*_~(])www\\.')
+  .getRegex();
+
 const inline = {
   _backpedal,
   anyPunctuation,
@@ -445,41 +451,35 @@ function parseNumericRef(s, i) {
 
 // Same as marked's escapeHtmlEntities, but as a single character scan:
 // with encode, every & < > " ' is escaped; without it, < > " ' are, and &
-// only when it cannot start a character reference.
+// only when it cannot start a character reference. No regex test first:
+// one pass either returns the original string (nothing to escape) or the
+// escaped copy.
 function escapeHtmlEntities(html, encode) {
-  if (encode) {
-    if (!other.escapeTest.test(html)) return html;
-    let out = '';
-    let start = 0;
-    for (let i = 0; i < html.length; i++) {
-      const rep = ESC[html[i]];
-      if (rep !== undefined) {
-        out += html.slice(start, i) + rep;
-        start = i + 1;
-      }
-    }
-    return out + html.slice(start);
-  }
-  if (!other.escapeTestNoEncode.test(html)) return html;
+  const n = html.length;
   let out = '';
   let start = 0;
-  for (let i = 0; i < html.length; i++) {
-    const ch = html[i];
-    if (ch === '<' || ch === '>' || ch === '"' || ch === "'") {
-      out += html.slice(start, i) + ESC[ch];
-      start = i + 1;
-    } else if (ch === '&' && !isValidCharRef(html, i + 1)) {
-      out += html.slice(start, i) + '&amp;';
-      start = i + 1;
-    }
+  for (let i = 0; i < n; i++) {
+    const code = html.charCodeAt(i);
+    let rep;
+    if (code === 38) { // &
+      if (!encode && isValidCharRef(html, i + 1)) continue;
+      rep = '&amp;';
+    } else if (code === 60) rep = '&lt;'; // <
+    else if (code === 62) rep = '&gt;'; // >
+    else if (code === 34) rep = '&quot;'; // "
+    else if (code === 39) rep = '&#39;'; // '
+    else continue;
+    out += html.slice(start, i) + rep;
+    start = i + 1;
   }
-  return out + html.slice(start);
+  return start === 0 ? html : out + html.slice(start);
 }
 
 // Same as marked's decodeNumericCharacterReferences, as a character scan.
 // A decoded character must not join its neighbours into a new reference,
 // so a bare & that is not already a reference is escaped here.
 function decodeNumericCharacterReferences(text) {
+  if (!text.includes('&')) return text;
   if (!other.numericCharacterReference.test(text)) return text;
   const n = text.length;
   let out = '';
@@ -1391,81 +1391,12 @@ function tokUrl(src) {
   }
 }
 
-// ---- Inline text: a hand-written scan equivalent to marked's GFM text rule ----
-
-const EMAIL_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.!#$%&'*+/=?_`{|}~-";
-
-function isAlnumChar(c) {
-  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
-}
-function isEmailChar(c) {
-  return EMAIL_CHARS.indexOf(c) !== -1;
-}
-// Does an email pattern [emailchars]+@ start at position i?
-function emailStartsAt(src, i) {
-  const n = src.length;
-  let j = i;
-  while (j < n && isEmailChar(src[j])) j++;
-  return j > i && j < n && src[j] === '@';
-}
-// Does ` {2,}\n` (two or more spaces, then a newline) start at i?
-function twoSpacesNewlineAt(src, i) {
-  const n = src.length;
-  let j = i;
-  while (j < n && src[j] === ' ') j++;
-  return j >= i + 2 && j < n && src[j] === '\n';
-}
-// Does an autolink protocol (http://, https://, ftp://, any case) start at i?
-function protocolAt(src, i) {
-  const s = src.slice(i, i + 8).toLowerCase();
-  return s.startsWith('http://') || s.startsWith('https://') || s.startsWith('ftp://');
-}
-// Does `www.` start at i where GFM allows a www autolink (start of the run,
-// or after whitespace, *, _, ~ or ()?
-function wwwAt(src, i) {
-  if (src.slice(i, i + 4) !== 'www.') return false;
-  if (i === 0) return true;
-  return /\s/.test(src[i - 1]) || src[i - 1] === '*' || src[i - 1] === '_' || src[i - 1] === '~' || src[i - 1] === '(';
-}
-function isMailtoAt(src, i) {
-  return src.startsWith('mailto:', i) || src.startsWith('xmpp:', i);
-}
-
-// End index (exclusive) of the inline text run starting at p.
-function inlineTextEnd(src, p) {
-  const n = src.length;
-  // A single non-alphanumeric character before mailto: / xmpp: is its own run.
-  if (p < n && !isAlnumChar(src[p]) && isMailtoAt(src, p + 1)) return p + 1;
-  let i = p;
-  if (src[i] === '`') {
-    while (i < n && src[i] === '`') i++;
-  } else if (src[i] === '~') {
-    while (i < n && src[i] === '~') i++;
-  } else {
-    i++;
-  }
-  if (i < n) {
-    if (src[i] === '`' || src[i] === '~') return i;
-    if (twoSpacesNewlineAt(src, i)) return i;
-    if (emailStartsAt(src, i)) return i;
-  }
-  let j = i;
-  while (j < n) {
-    const c = src[j];
-    if (c === '\\' || c === '<' || c === '!' || c === '[' || c === '`' || c === '*' || c === '~' || c === '_') return j;
-    if (protocolAt(src, j)) return j;
-    if (wwwAt(src, j)) return j;
-    if (c !== ' ' && twoSpacesNewlineAt(src, j + 1)) return j + 1;
-    if (!isAlnumChar(c) && isMailtoAt(src, j + 1)) return j + 1;
-    if (!isEmailChar(c) && emailStartsAt(src, j + 1)) return j + 1;
-    j++;
-  }
-  return n;
-}
+// ---- Inline text: marked's GFM text rule (the regex engine scans faster
+// than a hand-written per-character loop for this shape) ----
 
 function tokInlineText(L, src) {
-  const end = inlineTextEnd(src, 0);
-  const raw = src.slice(0, end);
+  const cap = inlineTextGfm.exec(src);
+  const raw = cap[0];
   const escaped = L.state.inRawBlock;
   return {
     type: 'text',
@@ -1711,11 +1642,13 @@ function inlineTokens(L, src, tokens = []) {
 }
 
 function inlineTokensInner(L, src, tokens) {
-  // The masked source is only read by emStrong and del, which need a *,
-  // _ or ~ to start. Skip building it for a run without one.
-  const maskedSrc = src.includes('*') || src.includes('_') || src.includes('~')
-    ? maskSrc(L, src)
-    : src;
+  // The masked source and the closer scan are only read by emStrong and
+  // del, which need a *, _ or ~ to start. Skip both for a run without one.
+  const hasDelim = src.includes('*') || src.includes('_') || src.includes('~');
+  const maskedSrc = hasDelim ? maskSrc(L, src) : src;
+  if (!hasDelim) {
+    return tokenizeInlines(L, src, maskedSrc, tokens);
+  }
   beginEmStrongDelCloserScan(L, maskedSrc);
   try {
     return tokenizeInlines(L, src, maskedSrc, tokens);
