@@ -1562,8 +1562,8 @@ function tokUrl(src) {
 // ---- Inline text: marked's GFM text rule (the regex engine scans faster
 // than a hand-written per-character loop for this shape) ----
 
-function tokInlineText(L, src) {
-  const end = inlineTextEnd(src);
+function tokInlineText(L, src, fl) {
+  const end = inlineTextEnd(src, fl);
   const raw = src.slice(0, end);
   const escaped = L.state.inRawBlock;
   return {
@@ -1784,18 +1784,24 @@ function maskSrc(L, src) {
   // Mask out escaped characters. Every mask must keep the length it
   // replaces: emStrong and del line maskedSrc up with src by slicing from
   // the end. A backslash inside a code span is literal, not an escape.
-  maskedSrc = maskedSrc.replace(inline.anyPunctuationOutsideCode, (match0, code, punct) => {
-    if (punct) return '+'.repeat(match0.length);
-    if (code) {
-      return code + match0.slice(code.length, -code.length).replace(/`/g, '+') + code;
-    }
-    return match0;
-  });
-  // Mask out other blocks.
-  maskedSrc = maskedSrc.replace(inline.blockSkip, (match0, _link, context) => {
-    const offset = context ? context.length : 0;
-    return match0.slice(0, offset) + '[' + 'a'.repeat(match0.length - offset - 2) + ']';
-  });
+  // The pattern can only match a backslash or a backtick.
+  if (src.includes('\\') || src.includes('`')) {
+    maskedSrc = maskedSrc.replace(inline.anyPunctuationOutsideCode, (match0, code, punct) => {
+      if (punct) return '+'.repeat(match0.length);
+      if (code) {
+        return code + match0.slice(code.length, -code.length).replace(/`/g, '+') + code;
+      }
+      return match0;
+    });
+  }
+  // Mask out other blocks. The pattern can only match a link ([), a code
+  // span (`) or an html tag (<).
+  if (src.includes('[') || src.includes('`') || src.includes('<')) {
+    maskedSrc = maskedSrc.replace(inline.blockSkip, (match0, _link, context) => {
+      const offset = context ? context.length : 0;
+      return match0.slice(0, offset) + '[' + 'a'.repeat(match0.length - offset - 2) + ']';
+    });
+  }
   return maskedSrc;
 }
 
@@ -1861,6 +1867,13 @@ function tokenizeInlines(L, src, maskedSrc, tokens) {
   let keepPrevChar = false;
   let prevChar = '';
   let srcLength = Infinity;
+  // What this inline run can contain, from native includes() scans
+  // (superset flags for inlineTextEnd; see its comment).
+  const fl = (src.includes('@') ? 1 : 0)
+    | ((src.includes('mailto:') || src.includes('xmpp:')) ? 2 : 0)
+    | (src.includes('://') ? 4 : 0)
+    | (src.includes('www.') ? 8 : 0)
+    | (src.includes('  \n') ? 16 : 0);
   while (src) {
     if (src.length < srcLength) {
       srcLength = src.length;
@@ -1958,7 +1971,7 @@ function tokenizeInlines(L, src, maskedSrc, tokens) {
       }
     }
     // text
-    if (token = tokInlineText(L, src)) {
+    if (token = tokInlineText(L, src, fl)) {
       src = src.substring(token.raw.length);
       if (token.raw.slice(-1) !== '_') { // Track prevChar before string of ____ started
         prevChar = token.raw.slice(-1);
