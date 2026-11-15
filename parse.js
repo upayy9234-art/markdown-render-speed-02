@@ -376,11 +376,122 @@ const _backpedal = /(?:[^?!.,:;*_'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*
 
 const del = /^(~~?)(?=[^\s~])((?:\\[\s\S]|[^\\])*?(?:\\[\s\S]|[^\s~\\]))\1(?=[^~]|$)/;
 
-const inlineTextGfm = edit(/^(?:[^a-zA-Z0-9](?=emailProtocol)|(`+|~+|[^`~])(?:(?=[`~])|(?= {2,}\n)|(?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)|[\s\S]*?(?:(?=[\\<!\[`*~_]|\b_|protocol:\/\/|wwwStart|$)|[^ ](?= {2,}\n)|[^a-zA-Z0-9](?=emailProtocol)|[^a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-](?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@))))/)
-  .replace('protocol', _caseInsensitiveProtocol)
-  .replace(/emailProtocol/g, /(?:mailto|xmpp):/)
-  .replace('wwwStart', '(?<![^\\s*_~(])www\\.')
-  .getRegex();
+// ---- Inline text: a hand-written scan equivalent to marked's GFM text
+// rule, jumping on character codes instead of re-running the rule's
+// lookaheads (notably the email lookahead) at every position. The regex
+// engine was slower for this shape: the lazy scan re-evaluates
+// [emailchars]+@ at each character, while this scan only checks an email
+// candidate at word boundaries (a non-email char followed by an email
+// char) and a protocol/www/hard-break candidate at its first letter. ----
+
+// Characters that end a text run wherever they appear.
+const TEXT_DELIM = new Uint8Array(128);
+for (const c of [92, 60, 33, 91, 96, 42, 126, 95]) TEXT_DELIM[c] = 1; // \ < ! [ ` * ~ _
+// Characters allowed inside an email address local/domain part.
+const EMAIL_CHAR = new Uint8Array(128);
+for (let i = 0; i < 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.!#$%&\'*+/=?_`{|}~-'.length; i++) {
+  EMAIL_CHAR['abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.!#$%&\'*+/=?_`{|}~-'.charCodeAt(i)] = 1;
+}
+
+function isAlnumCode(cc) {
+  return (cc >= 48 && cc <= 57) || (cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122);
+}
+function startsMailto(src, i) {
+  return src.startsWith('mailto:', i) || src.startsWith('xmpp:', i);
+}
+// Does an email pattern [emailchars]+@ start at i?
+function emailStartsAt(src, i) {
+  const n = src.length;
+  let j = i;
+  while (j < n) {
+    const cc = src.charCodeAt(j);
+    if (cc >= 128 || !EMAIL_CHAR[cc]) break;
+    j++;
+  }
+  return j > i && j < n && src.charCodeAt(j) === 64;
+}
+// Does ` {2,}\n` (two or more spaces, then a newline) start at i?
+function twoSpacesNewlineAt(src, i) {
+  const n = src.length;
+  let j = i;
+  while (j < n && src.charCodeAt(j) === 32) j++;
+  return j >= i + 2 && j < n && src.charCodeAt(j) === 10;
+}
+// Does an autolink protocol (http://, https://, ftp://, any case) start at i?
+function protocolAt(src, i) {
+  const c = src.charCodeAt(i) | 32;
+  if (c === 104) { // h
+    if ((src.charCodeAt(i + 1) | 32) !== 116) return false; // t
+    if ((src.charCodeAt(i + 2) | 32) !== 116) return false; // t
+    if ((src.charCodeAt(i + 3) | 32) !== 112) return false; // p
+    let j = i + 4;
+    if ((src.charCodeAt(j) | 32) === 115) j++; // s
+    return src.charCodeAt(j) === 58 && src.charCodeAt(j + 1) === 47 && src.charCodeAt(j + 2) === 47;
+  }
+  if (c === 102) { // f
+    if ((src.charCodeAt(i + 1) | 32) !== 116) return false; // t
+    if ((src.charCodeAt(i + 2) | 32) !== 112) return false; // p
+    return src.charCodeAt(i + 3) === 58 && src.charCodeAt(i + 4) === 47 && src.charCodeAt(i + 5) === 47;
+  }
+  return false;
+}
+// Does `www.` start at i where GFM allows a www autolink (start of the
+// run, or after whitespace, *, _, ~ or ()?
+function wwwAt(src, i) {
+  if (src.charCodeAt(i + 1) !== 119 || src.charCodeAt(i + 2) !== 119 || src.charCodeAt(i + 3) !== 46) return false;
+  if (i === 0) return true;
+  const p = src.charCodeAt(i - 1);
+  return p === 32 || p === 9 || p === 10 || p === 13 || p === 11 || p === 12 || p === 42 || p === 95 || p === 126 || p === 40;
+}
+
+// End index (exclusive) of the inline text run starting at the start of src.
+// fl is a bitmask of what the run can contain, computed once per inline
+// run by tokenizeInlines from native includes() scans (a superset test:
+// a set bit only ever causes an extra check, never a missed stop):
+// 1 '@', 2 'mailto:'/'xmpp:', 4 '://', 8 'www.', 16 '  \n'.
+function inlineTextEnd(src, fl) {
+  const n = src.length;
+  // A single non-alphanumeric character before mailto:/xmpp: is its own run.
+  if (n > 1 && (fl & 2) && !isAlnumCode(src.charCodeAt(0)) && startsMailto(src, 1)) return 1;
+  let i = 0;
+  const c0 = src.charCodeAt(0);
+  if (c0 === 96) {
+    while (i < n && src.charCodeAt(i) === 96) i++;
+  } else if (c0 === 126) {
+    while (i < n && src.charCodeAt(i) === 126) i++;
+  } else {
+    i = 1;
+  }
+  // Immediate stops right after the first character/group.
+  if (i < n) {
+    const ci = src.charCodeAt(i);
+    if (ci === 96 || ci === 126) return i;
+    if ((fl & 16) && twoSpacesNewlineAt(src, i)) return i;
+    if ((fl & 1) && emailStartsAt(src, i)) return i;
+  }
+  for (let j = i; j < n; j++) {
+    const cc = src.charCodeAt(j);
+    if (cc < 128 && TEXT_DELIM[cc]) return j;
+    if (cc === 104 || cc === 72 || cc === 102 || cc === 70) { // h H f F
+      if ((fl & 4) && protocolAt(src, j)) return j;
+    } else if (cc === 119) { // w
+      if ((fl & 8) && wwwAt(src, j)) return j;
+    } else if (cc === 32) { // space: a hard break (` {2,}\n`) starts here?
+      if ((fl & 16) && twoSpacesNewlineAt(src, j)) return j;
+    }
+    // One-character lookahead stops: a non-alphanumeric character before
+    // mailto:/xmpp:, or a non-email character before an email pattern,
+    // ends the run just after that character.
+    if (j + 1 < n) {
+      const nc = src.charCodeAt(j + 1);
+      if ((fl & 2) && !isAlnumCode(cc) && (nc === 109 || nc === 120)) { // m x
+        if (startsMailto(src, j + 1)) return j + 1;
+      }
+      if ((fl & 1) && (cc >= 128 || !EMAIL_CHAR[cc]) && nc < 128 && EMAIL_CHAR[nc] && emailStartsAt(src, j + 1)) return j + 1;
+    }
+  }
+  return n;
+}
 
 const inline = {
   _backpedal,
@@ -1452,8 +1563,8 @@ function tokUrl(src) {
 // than a hand-written per-character loop for this shape) ----
 
 function tokInlineText(L, src) {
-  const cap = inlineTextGfm.exec(src);
-  const raw = cap[0];
+  const end = inlineTextEnd(src);
+  const raw = src.slice(0, end);
   const escaped = L.state.inRawBlock;
   return {
     type: 'text',
@@ -1714,6 +1825,38 @@ function inlineTokensInner(L, src, tokens) {
   }
 }
 
+// Can the GFM url rule match at the start of src? It only matches
+// www., http(s)://, ftp://, mailto:/xmpp: + email, or a bare email
+// (local part at position 0, then @). Anything else cannot match, so the
+// url tokenizer need not run. This is a superset test: true only ever
+// causes an extra (failing) tokUrl call, never a missed match.
+function urlMayMatch(src) {
+  const c0 = src.charCodeAt(0);
+  if (c0 === 119) { // w: www.
+    if (src.charCodeAt(1) === 119 && src.charCodeAt(2) === 119 && src.charCodeAt(3) === 46) return true;
+  } else if (c0 === 104 || c0 === 72) { // h/H: http:// or https://
+    const s = src.slice(0, 8).toLowerCase();
+    if (s.startsWith('http://') || s === 'https://') return true;
+  } else if (c0 === 102 || c0 === 70) { // f/F: ftp://
+    if (src.slice(0, 6).toLowerCase() === 'ftp://') return true;
+  } else if (c0 === 109) { // m: mailto:
+    if (src.startsWith('mailto:')) return true;
+  } else if (c0 === 120) { // x: xmpp:
+    if (src.startsWith('xmpp:')) return true;
+  }
+  // Bare email: local-part chars [A-Za-z0-9._+-] from 0, then @.
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src.charCodeAt(i);
+    if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+      || c === 46 || c === 95 || c === 43 || c === 45) {
+      i++;
+    } else break;
+  }
+  return i > 0 && i < n && src.charCodeAt(i) === 64;
+}
+
 function tokenizeInlines(L, src, maskedSrc, tokens) {
   let keepPrevChar = false;
   let prevChar = '';
@@ -1727,71 +1870,92 @@ function tokenizeInlines(L, src, maskedSrc, tokens) {
     if (!keepPrevChar) prevChar = '';
     keepPrevChar = false;
     let token;
-    // escape
-    if (token = tokEscape(src)) {
-      src = src.substring(token.raw.length);
-      tokens.push(token);
-      continue;
-    }
-    // tag
-    if (token = tokTag(L, src)) {
-      src = src.substring(token.raw.length);
-      tokens.push(token);
-      continue;
-    }
-    // link
-    if (token = tokLink(L, src)) {
-      src = src.substring(token.raw.length);
-      tokens.push(token);
-      continue;
-    }
-    // reflink, nolink
-    if (token = tokReflink(L, src)) {
-      src = src.substring(token.raw.length);
-      const lastToken = tokens[tokens.length - 1];
-      if (token.type === 'text' && lastToken?.type === 'text') {
-        lastToken.raw += token.raw;
-        lastToken.text += token.text;
-      } else {
+    // Dispatch on the first character: every inline tokenizer is
+    // anchored and can only match when src starts with one of a few
+    // characters, so trying the others first only burns failed regex
+    // executions. The order inside each branch keeps marked's order.
+    const c = src.charCodeAt(0);
+    if (c === 92) { // backslash: escape, or a backslash-newline break
+      if (token = tokEscape(src)) {
+        src = src.substring(token.raw.length);
         tokens.push(token);
+        continue;
       }
-      continue;
-    }
-    // em & strong
-    if (token = tokEmStrong(L, src, maskedSrc, prevChar)) {
-      src = src.substring(token.raw.length);
-      tokens.push(token);
-      continue;
-    }
-    // code
-    if (token = tokCodespan(src)) {
-      src = src.substring(token.raw.length);
-      tokens.push(token);
-      continue;
-    }
-    // br
-    if (token = tokBr(src)) {
-      src = src.substring(token.raw.length);
-      tokens.push(token);
-      continue;
-    }
-    // del (gfm)
-    if (token = tokDel(L, src, maskedSrc, prevChar)) {
-      src = src.substring(token.raw.length);
-      tokens.push(token);
-      continue;
-    }
-    // autolink
-    if (token = tokAutolink(src)) {
-      src = src.substring(token.raw.length);
-      tokens.push(token);
-      continue;
-    }
-    // url (gfm)
-    if (!L.state.inLink && (token = tokUrl(src))) {
-      src = src.substring(token.raw.length);
-      tokens.push(token);
-      continue;
+      if (token = tokBr(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+    } else if (c === 60) { // <: html tag or autolink
+      if (token = tokTag(L, src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = tokAutolink(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+    } else if (c === 91 || c === 33) { // [ or !: link or reflink
+      if (token = tokLink(L, src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = tokReflink(L, src)) {
+        src = src.substring(token.raw.length);
+        const lastToken = tokens[tokens.length - 1];
+        if (token.type === 'text' && lastToken?.type === 'text') {
+          lastToken.raw += token.raw;
+          lastToken.text += token.text;
+        } else {
+          tokens.push(token);
+        }
+        continue;
+      }
+    } else if (c === 42 || c === 95) { // * or _: emphasis
+      if (token = tokEmStrong(L, src, maskedSrc, prevChar)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      // A bare email can start with `_` (its local part allows it), so
+      // when emphasis fails at `_`, the GFM url rule must still be tried
+      // before falling through to text — otherwise `_foo@bar.com` loses
+      // its leading underscore from the email link.
+      if (c === 95 && !L.state.inLink && urlMayMatch(src)) {
+        if (token = tokUrl(src)) {
+          src = src.substring(token.raw.length);
+          tokens.push(token);
+          continue;
+        }
+      }
+    } else if (c === 96) { // `: code span
+      if (token = tokCodespan(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+    } else if (c === 32) { // space: hard break (two spaces + newline)
+      if (token = tokBr(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+    } else if (c === 126) { // ~: strikethrough
+      if (token = tokDel(L, src, maskedSrc, prevChar)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+    } else if (!L.state.inLink && urlMayMatch(src)) {
+      // url (gfm): only reachable from a non-delimiter start
+      if (token = tokUrl(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
     }
     // text
     if (token = tokInlineText(L, src)) {
@@ -2002,3 +2166,4 @@ export function parse(markdown) {
   L.inlineQueue = [];
   return renderTokens(L, tokens);
 }
+
