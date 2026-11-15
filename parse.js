@@ -98,7 +98,17 @@ const other = {
   carriageReturn: /\r\n|\r/g,
   notSpaceStart: /^\S*/,
   endingNewline: /\n$/,
-  listItemRegex: (bull) => new RegExp(`^( {0,3}${bull})((?:[\t ][^\n]*)?(?:\n|$))`),
+  listItemRegex: (() => {
+    const cache = new Map();
+    return (bull) => {
+      let regex = cache.get(bull);
+      if (!regex) {
+        regex = new RegExp(`^( {0,3}${bull})((?:[\\t ][^\\n]*)?(?:\\n|$))`);
+        cache.set(bull, regex);
+      }
+      return regex;
+    };
+  })(),
   nextBulletRegex: cachedIndentRegex((indent) => new RegExp(`^ {0,${indent}}(?:[*+-]|\\d{1,9}[.)])((?:[ \t][^\n]*)?(?:\\n|$))`)),
   hrRegex: cachedIndentRegex((indent) => new RegExp(`^ {0,${indent}}((?:-[ \t]*){3,}|(?:_[ \t]*){3,}|(?:\\*[ \t]*){3,})(?:\\n+|$)`)),
   fencesBeginRegex: cachedIndentRegex((indent) => new RegExp(`^ {0,${indent}}(?:\`\`\`|~~~)`)),
@@ -864,17 +874,63 @@ function tokList(L, src) {
         const headingBeginRegex = other.headingBeginRegex(indent);
         const htmlBeginRegex = other.htmlBeginRegex(indent);
         const blockquoteBeginRegex = other.blockquoteBeginRegex(indent);
-        while (src) {
-          const rawLine = src.split('\n', 1)[0];
+        // Index-based line scan: the old per-line src.substring() copied
+        // the whole remainder of the list on every line (quadratic).
+        // p only advances past a line once it is consumed; on break it
+        // still points at the unconsumed line, exactly like src did.
+        // The six begin-of-line regexes below are all `^ {0,effMax}marker`
+        // (cachedIndentRegex builds them with effMax = clamp(indent-1,0,3)),
+        // so none of them can match unless the first non-space character
+        // sits within effMax spaces and is a marker character: dispatch on
+        // that character instead of running all six on every line.
+        const effMax = Math.max(0, Math.min(3, indent - 1));
+        let p = 0;
+        while (p < src.length) {
+          let nl = src.indexOf('\n', p);
+          if (nl === -1) nl = src.length;
+          const rawLine = src.slice(p, nl);
           nextLine = rawLine;
-          const nextLineWithoutTabs = nextLine.replace(other.leadingSpaceTab, (whitespace) => expandTabs(whitespace));
-          if (fencesBeginRegex.test(nextLine)) break;
-          if (headingBeginRegex.test(nextLine)) break;
-          if (htmlBeginRegex.test(nextLine)) break;
-          if (blockquoteBeginRegex.test(nextLine)) break;
-          if (nextBulletRegex.test(nextLine)) break;
-          if (hrRegex.test(nextLine)) break;
-          if (nextLineWithoutTabs.search(other.nonSpaceChar) >= indent || !nextLine.trim()) {
+          // expandTabs only changes tabs; a leading run without a tab is
+          // returned unchanged, so skip the replace (and its copy) then.
+          let nextLineWithoutTabs = nextLine;
+          if (nextLine.charCodeAt(0) === 32 || nextLine.charCodeAt(0) === 9) {
+            let hasTab = false;
+            for (let q = 0; q < nextLine.length; q++) {
+              const cc = nextLine.charCodeAt(q);
+              if (cc === 9) { hasTab = true; break; }
+              if (cc !== 32) break;
+            }
+            if (hasTab) {
+              nextLineWithoutTabs = nextLine.replace(other.leadingSpaceTab, (whitespace) => expandTabs(whitespace));
+            }
+          }
+          // First non-space (space only) character of the raw line.
+          let k = 0;
+          while (k < nextLine.length && nextLine.charCodeAt(k) === 32) k++;
+          if (k <= effMax && k < nextLine.length) {
+            const fc = nextLine.charCodeAt(k);
+            if (fc === 96 || fc === 126) { // ` ~
+              if (fencesBeginRegex.test(nextLine)) break;
+            } else if (fc === 35) { // #
+              if (headingBeginRegex.test(nextLine)) break;
+            } else if (fc === 60) { // <
+              if (htmlBeginRegex.test(nextLine)) break;
+            } else if (fc === 62) { // >
+              if (blockquoteBeginRegex.test(nextLine)) break;
+            } else if (fc === 42 || fc === 43 || fc === 45) { // * + -
+              if (nextBulletRegex.test(nextLine)) break;
+              if (hrRegex.test(nextLine)) break;
+            } else if (fc === 95) { // _
+              if (hrRegex.test(nextLine)) break;
+            } else if (fc >= 48 && fc <= 57) { // digit
+              if (nextBulletRegex.test(nextLine)) break;
+            }
+          }
+          // First index whose character is not a space (== /[^ ]/ search).
+          let firstNonSpace = 0;
+          while (firstNonSpace < nextLineWithoutTabs.length && nextLineWithoutTabs.charCodeAt(firstNonSpace) === 32) firstNonSpace++;
+          const isBlank = !nextLine.trim();
+          if (firstNonSpace >= indent || isBlank) {
             itemContents += '\n' + nextLineWithoutTabs.slice(indent);
           } else {
             if (blankLine) break;
@@ -890,10 +946,11 @@ function tokList(L, src) {
               : nextLine;
             itemContents += '\n' + continuation;
           }
-          blankLine = !nextLine.trim();
-          src = src.substring(rawLine.length + 1);
+          blankLine = isBlank;
+          p = nl + 1;
           line = nextLineWithoutTabs.slice(indent);
         }
+        src = src.slice(p);
       }
       const raw = listSrc.slice(itemStart, taken());
       if (!list.loose) {
