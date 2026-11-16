@@ -717,9 +717,14 @@ function findClosingBracket(str, b) {
 }
 
 function expandTabs(line, indent = 0) {
+  // Loop indeks berbasis charCodeAt, bukan for...of: iterator code-point
+  // mengalokasikan per baris, sementara di sini hanya tab yang spesial
+  // (tab dan spasi semuanya BMP, jadi indeks UTF-16 setara dengan iterasi
+  // karakter untuk jalur ini).
   let col = indent;
   let expanded = '';
-  for (const char of line) {
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
     if (char === '\t') {
       const added = 4 - (col % 4);
       expanded += ' '.repeat(added);
@@ -1842,10 +1847,21 @@ function urlMayMatch(src) {
   if (c0 === 119) { // w: www.
     if (src.charCodeAt(1) === 119 && src.charCodeAt(2) === 119 && src.charCodeAt(3) === 46) return true;
   } else if (c0 === 104 || c0 === 72) { // h/H: http:// atau https://
-    const s = src.slice(0, 8).toLowerCase();
-    if (s.startsWith('http://') || s === 'https://') return true;
+    // Bandingkan per kode karakter (case-insensitive via |32) supaya tidak
+    // mengalokasikan slice + string lower-case di tiap kandidat url.
+    const h = src.charCodeAt(1) | 32;
+    const t1 = src.charCodeAt(2) | 32;
+    const t2 = src.charCodeAt(3) | 32;
+    const p = src.charCodeAt(4) | 32;
+    if (h === 116 && t1 === 116 && t2 === 112 && p === 58
+      && src.charCodeAt(5) === 47 && src.charCodeAt(6) === 47) return true;
+    if (h === 116 && t1 === 116 && t2 === 112 && p === 115
+      && src.charCodeAt(5) === 58 && src.charCodeAt(6) === 47
+      && src.charCodeAt(7) === 47) return true;
   } else if (c0 === 102 || c0 === 70) { // f/F: ftp://
-    if (src.slice(0, 6).toLowerCase() === 'ftp://') return true;
+    if ((src.charCodeAt(1) | 32) === 116 && (src.charCodeAt(2) | 32) === 112
+      && src.charCodeAt(3) === 58 && src.charCodeAt(4) === 47
+      && src.charCodeAt(5) === 47) return true;
   } else if (c0 === 109) { // m: mailto:
     if (src.startsWith('mailto:')) return true;
   } else if (c0 === 120) { // x: xmpp:
