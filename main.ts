@@ -1,7 +1,7 @@
-// Driver: renders every case in the input set with parse() and writes the
-// HTML strings, in order, to the output file. The harness runs
-// `node /bot/main.ts` (node 22); outside a container, MAKEFUN_INPUT_DIR and
-// MAKEFUN_OUTPUT_DIR stand in for /input and /output.
+// Driver: me-render setiap case pada set masukan dengan parse() lalu
+// menulis string HTML-nya, berurutan, ke file keluaran. Harness menjalankan
+// `node /bot/main.ts` (Node 22); di luar container, MAKEFUN_INPUT_DIR dan
+// MAKEFUN_OUTPUT_DIR menggantikan /input dan /output.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
