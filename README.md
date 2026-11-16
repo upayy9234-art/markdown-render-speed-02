@@ -1,37 +1,37 @@
 # markdown-render-speed-02
 
-Renderer CommonMark 0.31.2 + GFM yang cepat. `parse(markdown)` mengembalikan
-persis HTML yang dirender marked 18.1.3 dengan opsi default-nya (gfm aktif,
-breaks mati, pedantic mati) — dan me-render-nya lebih cepat.
+A fast CommonMark 0.31.2 + GFM renderer. `parse(markdown)` returns exactly
+the HTML that marked 18.1.3 produces with its default settings (GFM on,
+breaks off, pedantic off) — only faster.
 
-## Tata letak
+## Files
 
-- `parse.js` — renderer-nya. Modul ES tanpa dependensi; `parse(markdown)`
-  mengembalikan string HTML untuk satu dokumen.
-- `main.ts` — driver yang dijalankan harness: membaca `/input/cases.json`,
-  me-render tiap case sendiri-sendiri dengan `parse`, lalu menulis string
-  HTML-nya, berurutan, ke `/output/html.json`.
+- `parse.js` — the renderer itself. A dependency-free ES module; `parse(markdown)`
+  returns the HTML string for one document.
+- `main.ts` — the driver the harness runs: it reads `/input/cases.json`,
+  renders each case on its own with `parse`, and writes the HTML strings,
+  in order, to `/output/html.json`.
 
-## Cara kerja
+## How it works
 
-Grammar blok dan inline mengikuti bentuk yang dipakai marked (bentuk itulah
-yang mengodekan perilaku persisnya, termasuk di mana marked menyimpang dari
-spesifikasi), sementara jalur panas — pemindaian teks inline, escaping HTML,
-dan dekode referensi numerik — berupa pemindaian karakter tulisan tangan,
-bukan regular expression. Rendering bekerja langsung pada token, tanpa
-salinan sumber yang tidak perlu.
+The block and inline grammars follow the shape marked uses (that shape is
+what pins down the exact behaviour, including the places where marked
+departs from the spec), while the hot paths — inline text scanning, HTML
+escaping, and numeric reference decoding — are hand-written character scans
+rather than regular expressions. Rendering works directly on tokens, with no
+needless copies of the source.
 
-Target perilaku: marked 18.1.3 (MIT), github.com/markedjs/marked pada tag
+Behaviour target: marked 18.1.3 (MIT), github.com/markedjs/marked at tag
 v18.1.3.
 
-## Cara run
+## Running it
 
 ```sh
 node main.ts
 ```
 
-Dengan `MAKEFUN_INPUT_DIR` dan `MAKEFUN_OUTPUT_DIR` untuk mengarahkan
-direktori masukan/keluaran di luar container harness.
+Outside the harness container, `MAKEFUN_INPUT_DIR` and
+`MAKEFUN_OUTPUT_DIR` redirect the input and output directories.
 
 [![make.fun · markdown-render-speed-02](https://make.fun/badge/markdown-render-speed-02.svg)](https://make.fun/bounty/markdown-render-speed-02?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
 [![rank](https://make.fun/badge/markdown-render-speed-02/upayy9234-art/markdown-render-speed-02/rank.svg)](https://make.fun/bounty/markdown-render-speed-02/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
