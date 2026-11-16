@@ -1,1 +1,1 @@
-{"type":"module"}
+{"description":"Dependency-free CommonMark + GFM renderer matching marked 18.1.3 HTML, built for the make.fun markdown-render-speed-02 bounty.","license":"MIT","name":"markdown-render-speed-02","private":true,"type":"module","version":"1.0.0"}

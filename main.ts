@@ -1,20 +1,39 @@
-// Driver: me-render setiap case pada set masukan dengan parse() lalu
-// menulis string HTML-nya, berurutan, ke file keluaran. Harness menjalankan
-// `node /bot/main.ts` (Node 22); di luar container, MAKEFUN_INPUT_DIR dan
-// MAKEFUN_OUTPUT_DIR menggantikan /input dan /output.
+// Driver for the markdown-render-speed-02 entry.
+//
+// The harness runs `node /bot/main.ts`. It hands us a directory of cases
+// and expects one HTML string per case, in order, written back out.
+// Input lives at $MAKEFUN_INPUT_DIR/cases.json (or /input/cases.json when
+// the variable is absent); output goes to $MAKEFUN_OUTPUT_DIR/html.json
+// (or /output/html.json). Each case is rendered on its own by parse()
+// from parse.js, which mirrors marked 18.1.3 with its default options.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from './parse.js';
 
-type Case = { id: string; markdown: string };
-
-function main(): void {
-  const inputDir = process.env.MAKEFUN_INPUT_DIR ?? '/input';
-  const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-  const cases = JSON.parse(readFileSync(join(inputDir, 'cases.json'), 'utf8')) as Case[];
-  const html = cases.map((c) => parse(c.markdown));
-  writeFileSync(join(outputDir, 'html.json'), JSON.stringify(html));
+function inputDir() {
+  return process.env.MAKEFUN_INPUT_DIR ?? '/input';
 }
 
-main();
+function outputDir() {
+  return process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+}
+
+function loadCases(dir) {
+  const raw = readFileSync(join(dir, 'cases.json'), 'utf8');
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error('cases.json is not an array');
+  return parsed;
+}
+
+function renderAll(cases) {
+  const out = new Array(cases.length);
+  for (let k = 0; k < cases.length; k++) {
+    out[k] = parse(cases[k].markdown);
+  }
+  return out;
+}
+
+const cases = loadCases(inputDir());
+const html = renderAll(cases);
+writeFileSync(join(outputDir(), 'html.json'), JSON.stringify(html));

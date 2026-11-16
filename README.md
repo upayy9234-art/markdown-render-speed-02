@@ -1,38 +1,28 @@
 # markdown-render-speed-02
 
-Renderer CommonMark 0.31.2 + GFM yang cepat. `parse(markdown)` mengembalikan
-persis HTML yang dirender marked 18.1.3 dengan opsi default-nya (gfm aktif,
-breaks mati, pedantic mati) — dan me-render-nya lebih cepat.
+[![make.fun bounty](https://make.fun/badge/markdown-render-speed-02.svg)](https://make.fun/bounty/markdown-render-speed-02)
+[![make.fun rank](https://make.fun/badge/markdown-render-speed-02/upayy9234-art/markdown-render-speed-02/rank.svg)](https://make.fun/bounty/markdown-render-speed-02)
+[![make.fun reward](https://make.fun/badge/markdown-render-speed-02/upayy9234-art/markdown-render-speed-02/reward.svg)](https://make.fun/bounty/markdown-render-speed-02)
 
-## Tata letak
+A dependency-free JavaScript renderer for the [make.fun markdown-render-speed-02 bounty](https://make.fun/bounty/markdown-render-speed-02). It renders Markdown to exactly the HTML that [marked 18.1.3](https://github.com/markedjs/marked) produces with its default options (CommonMark 0.31.2 plus GFM), using only the JavaScript standard library — no dependencies, no network, no build step.
 
-- `parse.js` — renderer-nya. Modul ES tanpa dependensi; `parse(markdown)`
-  mengembalikan string HTML untuk satu dokumen.
-- `main.ts` — driver yang dijalankan harness: membaca `/input/cases.json`,
-  me-render tiap case sendiri-sendiri dengan `parse`, lalu menulis string
-  HTML-nya, berurutan, ke `/output/html.json`.
+## Layout
 
-## Cara kerja
+- `parse.js` — the renderer. `parse(markdown)` returns the HTML string for one document. It is a single self-contained ES module: a container-stack block parser (CommonMark) plus a single-pass inline scanner with the cmark emphasis algorithm, reference links, tables, autolinks, and HTML blocks.
+- `main.ts` — the harness driver. It reads `cases.json` from `$MAKEFUN_INPUT_DIR` (or `/input`), renders every case in order with `parse()`, and writes the HTML array to `$MAKEFUN_OUTPUT_DIR/html.json` (or `/output/html.json`).
+- `package.json` — `{ "type": "module" }`; nothing to install.
 
-Grammar blok dan inline mengikuti bentuk yang dipakai marked (bentuk itulah
-yang mengodekan perilaku persisnya, termasuk di mana marked menyimpang dari
-spesifikasi), sementara jalur panas — pemindaian teks inline, escaping HTML,
-dan dekode referensi numerik — berupa pemindaian karakter tulisan tangan,
-bukan regular expression. Rendering bekerja langsung pada token, tanpa
-salinan sumber yang tidak perlu.
-
-Target perilaku: marked 18.1.3 (MIT), github.com/markedjs/marked pada tag
-v18.1.3.
-
-## Cara run
+## Run it
 
 ```sh
-node main.ts
+# render the practice cases the same way the harness does
+MAKEFUN_INPUT_DIR=../practice/input MAKEFUN_OUTPUT_DIR=/tmp/out node main.ts
 ```
 
-Dengan `MAKEFUN_INPUT_DIR` dan `MAKEFUN_OUTPUT_DIR` untuk mengarahkan
-direktori masukan/keluaran di luar container harness.
+## How it works
 
-[![make.fun · markdown-render-speed-02](https://make.fun/badge/markdown-render-speed-02.svg)](https://make.fun/bounty/markdown-render-speed-02?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
-[![rank](https://make.fun/badge/markdown-render-speed-02/upayy9234-art/markdown-render-speed-02/rank.svg)](https://make.fun/bounty/markdown-render-speed-02/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
-[![reward](https://make.fun/badge/markdown-render-speed-02/upayy9234-art/markdown-render-speed-02/reward.svg)](https://make.fun/bounty/markdown-render-speed-02?utm_source=github&utm_medium=readme&utm_campaign=markdown-render-speed-02)
+The block parser walks the document line by line with a stack of open containers (blockquotes, list items, lists) and leaf blocks (paragraphs, fenced and indented code, HTML blocks, tables). The inline scanner then turns each paragraph, heading, table cell, and link text into HTML in one left-to-right pass, resolving emphasis with the delimiter-stack algorithm (including the rule of threes and the block rule), links and images with reference definitions, code spans, autolinks (angle, extended, and email), entities, and hard breaks.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
